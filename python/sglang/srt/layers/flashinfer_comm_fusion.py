@@ -232,10 +232,6 @@ def cleanup_flashinfer_workspace():
     if _workspace_manager is not None:
         _workspace_manager.cleanup()
 
-
-_gpuk_manager = GPUKManager()
-
-
 class GPUKManager:
     def __init__(self):
         self.world_size = None
@@ -259,9 +255,11 @@ class GPUKManager:
         self.initialized = True
 
     def cleanup(self):
-        del self.dist_env
         self.dist_env = None
         self.initialized = False
+
+
+_gpuk_manager = GPUKManager()
 
 
 def ensure_gpuk_initialized():
@@ -294,7 +292,7 @@ def gpuk_allreduce_residual_rmsnorm_quant(
     if not ensure_gpuk_initialized():
         logger.debug("gpuk not available")
         return None, None, None
-    return _gpuk_manager.allreduce_add_rms_fused(
+    return _gpuk_manager.dist_env.allreduce_add_rms_fused(
         allreduce_in,
         residual_in,
         rms_weight,
