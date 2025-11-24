@@ -236,12 +236,14 @@ class GPUKManager:
     def __init__(self):
         self.world_size = None
         self.rank = None
+        self.dtype = None
         self.initialized = False
 
     def initialize(
         self,
         world_size: int,
         rank: int,
+        dtype: torch.dtype,
     ):
         """Initialize workspace"""
         if self.initialized and self.world_size == world_size:
@@ -251,7 +253,8 @@ class GPUKManager:
 
         self.world_size = world_size
         self.rank = rank
-        self.dist_env = gpuk.DistributedEnv(rank, world_size)
+        self.dtype = dtype
+        self.dist_env = gpuk.DistributedEnv(rank, world_size, dtype=self.dtype)
         self.initialized = True
 
     def cleanup(self):
@@ -262,7 +265,7 @@ class GPUKManager:
 _gpuk_manager = GPUKManager()
 
 
-def ensure_gpuk_initialized():
+def ensure_gpuk_initialized(dtype):
     """Ensure gpuk is initialized"""
     world_size = get_tensor_model_parallel_world_size()
     if world_size <= 1:
@@ -273,10 +276,12 @@ def ensure_gpuk_initialized():
     if (
         not _gpuk_manager.initialized
         or _gpuk_manager.world_size != world_size
+        or _gpuk_manager.dtype !=  dtype
     ):
         _gpuk_manager.initialize(
             world_size=world_size,
             rank=rank,
+            dtype=dtype,
         )
 
     return _gpuk_manager.initialized
@@ -289,7 +294,7 @@ def gpuk_allreduce_residual_rmsnorm_quant(
     eps: float = 1e-6,
     fp8_out: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    if not ensure_gpuk_initialized():
+    if not ensure_gpuk_initialized(allreduce_in.dtype):
         logger.debug("gpuk not available")
         return None, None, None
     return _gpuk_manager.dist_env.allreduce_add_rms_fused(
