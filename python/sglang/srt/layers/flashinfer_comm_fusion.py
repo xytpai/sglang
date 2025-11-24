@@ -3,6 +3,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.distributed as dist
+import gpuk
 
 from sglang.srt.distributed import get_tensor_model_parallel_world_size
 from sglang.srt.utils import (
@@ -230,3 +231,99 @@ def cleanup_flashinfer_workspace():
     global _workspace_manager
     if _workspace_manager is not None:
         _workspace_manager.cleanup()
+
+
+_gpuk_manager = GPUKManager()
+
+
+class GPUKManager:
+    def __init__(self):
+        self.world_size = None
+        self.rank = None
+        self.initialized = False
+
+    def initialize(
+        self,
+        world_size: int,
+        rank: int,
+    ):
+        """Initialize workspace"""
+        if self.initialized and self.world_size == world_size:
+            return
+
+        self.cleanup()
+
+        self.world_size = world_size
+        self.rank = rank
+        self.dist_env = gpuk.DistributedEnv(rank, world_size)
+        self.initialized = True
+
+    def cleanup(self):
+        del self.dist_env
+        self.dist_env = None
+        self.initialized = False
+
+
+def ensure_gpuk_initialized():
+    """Ensure gpuk is initialized"""
+    world_size = get_tensor_model_parallel_world_size()
+    if world_size <= 1:
+        return False
+
+    rank = dist.get_rank()
+
+    if (
+        not _gpuk_manager.initialized
+        or _gpuk_manager.world_size != world_size
+    ):
+        _gpuk_manager.initialize(
+            world_size=world_size,
+            rank=rank,
+        )
+
+    return _gpuk_manager.initialized
+
+
+def gpuk_allreduce_residual_rmsnorm_quant(
+    allreduce_in: torch.Tensor,
+    residual_in: torch.Tensor,
+    rms_weight: torch.Tensor,
+    eps: float = 1e-6,
+    fp8_out: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if not ensure_gpuk_initialized():
+        logger.debug("gpuk not available")
+        return None, None, None
+    return _gpuk_manager.allreduce_add_rms_fused(
+        allreduce_in,
+        residual_in,
+        rms_weight,
+        eps,
+        fp8_out,
+    )
+
+
+def fake_gpuk_allreduce_residual_rmsnorm_quant(
+    allreduce_in: torch.Tensor,
+    residual_in: torch.Tensor,
+    rms_weight: torch.Tensor,
+    eps: float = 1e-6,
+    fp8_out: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    residual_out = torch.empty_like(residual_in)
+    norm_out = torch.empty_like(allreduce_in)
+    scale_out = torch.empty(
+                allreduce_in.shape[0],
+                1,
+                dtype=torch.float32,
+                device=allreduce_in.device,
+            )
+    return residual_out, norm_out, scale_out
+
+
+direct_register_custom_op(
+    "gpuk_allreduce_residual_rmsnorm_quant",
+    gpuk_allreduce_residual_rmsnorm_quant,
+    mutates_args=["allreduce_in"],
+    fake_impl=fake_gpuk_allreduce_residual_rmsnorm_quant,
+)
