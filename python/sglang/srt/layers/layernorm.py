@@ -305,7 +305,7 @@ class RMSNorm(CustomOp):
                     fp8_out=False,
                 )
                 residual_out, norm_out, scale_out = fused_result
-                if norm_out[0] is not None:
+                if norm_out is not None:
                     return norm_out, residual_out
 
         return self.forward(x, residual)
